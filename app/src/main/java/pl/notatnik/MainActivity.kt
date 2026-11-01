@@ -80,6 +80,7 @@ class MainActivity : Activity() {
     private val REQ_PHOTO_PICK = 79
     private val REQ_CARD = 80
     private val REQ_INVITE = 81
+    private val REQ_PDF = 82
     private val ACTION_INSTALL = "pl.notatnik.INSTALL_RESULT"
 
     private lateinit var root: FrameLayout
@@ -445,9 +446,8 @@ class MainActivity : Activity() {
 
     private fun matches(n: Note): Boolean {
         if (n.template) return false
-        val recipes = area == "recipes"
-        if (filter == "trash") return n.deleted > 0 && n.isRecipe == recipes
-        if (n.deleted > 0 || n.isRecipe != recipes) return false
+        if (filter == "trash") return n.deleted > 0 && Store.area(n) == area
+        if (n.deleted > 0 || Store.area(n) != area) return false
         val okFilter = when {
             filter == "archive" -> n.archived
             n.archived -> false
@@ -455,7 +455,8 @@ class MainActivity : Activity() {
             filter == "list" -> n.isList
             filter == "shared" -> n.shared
             filter == "audio" -> n.type == "audio" || n.audio.isNotEmpty()
-            filter == "scan" -> n.type == "scan"
+            filter == "docs" -> n.type == "scan"
+            filter == "cards" -> n.type == "card"
             filter == "photo" -> n.photos.isNotEmpty()
             filter == "remind" -> n.reminder > System.currentTimeMillis()
             filter.startsWith("l:") -> filter.removePrefix("l:") in n.labels
@@ -475,15 +476,14 @@ class MainActivity : Activity() {
 
     private fun areaTabs(onHero: Boolean): View {
         val r = hbox()
-        val recipes = area == "recipes"
-        listOf("notes" to "Notatki", "recipes" to "Przepisy").forEach { (k, label) ->
-            val sel = (k == "recipes") == recipes
-            val t = if (onHero) tv(label, 14f, true, if (sel) Theme.accent else Color.WHITE).apply {
+        listOf("notes" to "Notatki", "recipes" to "Przepisy", "scans" to "Skany").forEach { (k, label) ->
+            val sel = k == area
+            val t = if (onHero) tv(label, 13f, true, if (sel) Theme.accent else Color.WHITE).apply {
                 background = round(if (sel) Color.WHITE else Theme.withAlpha(Color.WHITE, 0.2f), 16)
-                setPadding(dp(16), dp(8), dp(16), dp(8))
+                setPadding(dp(12), dp(7), dp(12), dp(7))
                 setOnClickListener { switchArea(k) }
             } else btn(label, sel, 14f) { switchArea(k) }
-            r.addView(t, lp(WRAP, WRAP).apply { rightMargin = dp(8) })
+            r.addView(t, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
         }
         return r
     }
@@ -491,10 +491,12 @@ class MainActivity : Activity() {
     private fun renderLib() {
         val col = page()
         val recipes = area == "recipes"
-        val total = Store.notes.count { it.deleted == 0L && !it.archived && !it.template && it.isRecipe == recipes }
+        val scans = area == "scans"
+        val areaTitle = when (area) { "recipes" -> "Przepisy"; "scans" -> "Skany"; else -> "Notatnik" }
+        val total = Store.notes.count { it.deleted == 0L && !it.archived && !it.template && Store.area(it) == area }
         if (Store.eink) {
             val head = hbox()
-            head.addView(tv(if (recipes) "Przepisy" else "Notatnik", 32f, true), lp(0, WRAP, 1f))
+            head.addView(tv(areaTitle, 32f, true), lp(0, WRAP, 1f))
             head.addView(roundIcon(R.drawable.ic_settings) { go("settings") })
             col.addView(head)
             col.addView(areaTabs(false), lp(top = 8))
@@ -511,9 +513,13 @@ class MainActivity : Activity() {
             gear.addView(icon(R.drawable.ic_settings, 20, Color.WHITE), FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER))
             top.addView(gear, LinearLayout.LayoutParams(dp(40), dp(40)))
             hero.addView(top)
-            hero.addView(tv(if (recipes) "Przepisy" else "Notatnik", 34f, true, Color.WHITE), lp(top = 8))
+            hero.addView(tv(areaTitle, 34f, true, Color.WHITE), lp(top = 8))
             val rem = Store.notes.count { it.deleted == 0L && it.reminder > System.currentTimeMillis() }
-            hero.addView(tv(if (recipes) "$total przepisów" else "$total wpisów" + (if (rem > 0) " · $rem przypomnień" else ""), 13f, false, Theme.withAlpha(Color.WHITE, 0.85f)))
+            hero.addView(tv(when {
+                recipes -> "$total przepisów"
+                scans -> "$total dokumentów i wizytówek"
+                else -> "$total wpisów" + (if (rem > 0) " · $rem przypomnień" else "")
+            }, 13f, false, Theme.withAlpha(Color.WHITE, 0.85f)))
             col.addView(hero, lp(top = 4))
         }
 
@@ -536,24 +542,45 @@ class MainActivity : Activity() {
             col.addView(box, lp(top = 12))
         }
 
-        val search = edit(query, if (recipes) "Szukaj przepisu lub składnika" else "Szukaj w notatkach, listach, zdjęciach i skanach", InputType.TYPE_CLASS_TEXT).apply { setSingleLine(true) }
+        val search = edit(query, when {
+            recipes -> "Szukaj przepisu lub składnika"
+            scans -> "Szukaj w treści dokumentów i wizytówek"
+            else -> "Szukaj w notatkach, listach i zdjęciach"
+        }, InputType.TYPE_CLASS_TEXT).apply { setSingleLine(true) }
         val list = vbox()
         watch(search) { query = it; fillList(list) }
         col.addView(search, lp(top = 14))
 
         val quick = hbox().apply { gravity = Gravity.TOP }
-        val qa: List<Triple<Int, String, () -> Unit>> = if (recipes) listOf(
-            Triple(R.drawable.ic_plus, "Nowy przepis") { newRecipe() },
-            Triple(R.drawable.ic_open, "Z linku") { recipeFromLink("") },
-            Triple(R.drawable.ic_camera, "Ze zdjęcia") { val r = newRecipe(); addPhoto(r) }
-        ) else listOf(
-            Triple(R.drawable.ic_note, "Notatka") { newNote("text") },
-            Triple(R.drawable.ic_check_list, "Lista") { newNote("list") },
-            Triple(R.drawable.ic_mic, "Dyktuj") { newNote("dictate") },
-            Triple(R.drawable.ic_stop, "Nagraj") { newNote("record") },
-            Triple(R.drawable.ic_scan, "Skanuj") { scanChoice() },
-            Triple(R.drawable.ic_label, "Szablon") { templatesSheet() }
-        )
+        val qa: List<Triple<Int, String, () -> Unit>> = when {
+            recipes -> listOf(
+                Triple(R.drawable.ic_plus, "Nowy przepis") { newRecipe() },
+                Triple(R.drawable.ic_open, "Z linku") { recipeFromLink("") },
+                Triple(R.drawable.ic_camera, "Ze zdjęcia") { val r = newRecipe(); addPhoto(r) }
+            )
+            scans -> listOf(
+                Triple(R.drawable.ic_scan, "Dokument") { startScan() },
+                Triple(R.drawable.ic_label, "Wizytówka") { startCardScan() },
+                Triple(R.drawable.ic_note, "Plik PDF") {
+                    try {
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/pdf")
+                            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true), REQ_PDF)
+                    } catch (e: Exception) {
+                        toast("Nie mogę otworzyć plików")
+                    }
+                },
+                Triple(R.drawable.ic_open, "Z folderu") {
+                    try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_SCANS_DIR) } catch (e: Exception) { toast("Nie mogę otworzyć wyboru folderu") }
+                }
+            )
+            else -> listOf(
+                Triple(R.drawable.ic_note, "Notatka") { newNote("text") },
+                Triple(R.drawable.ic_check_list, "Lista") { newNote("list") },
+                Triple(R.drawable.ic_mic, "Dyktuj") { newNote("dictate") },
+                Triple(R.drawable.ic_stop, "Nagraj") { newNote("record") },
+                Triple(R.drawable.ic_label, "Szablon") { templatesSheet() }
+            )
+        }
         for ((res, label, f) in qa) {
             val v = vbox().apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -570,16 +597,20 @@ class MainActivity : Activity() {
         val chips = hbox()
         val fl = mutableListOf("all" to "Wszystko")
         if (recipes) {
-            Store.labels(true).forEach { fl.add("l:$it" to it) }
+            Store.labels("recipes").forEach { fl.add("l:$it" to it) }
+        } else if (scans) {
+            fl.addAll(listOf("docs" to "Dokumenty", "cards" to "Wizytówki", "remind" to "Przypomnienia"))
+            Store.labels("scans").forEach { fl.add("l:$it" to "#$it") }
+            if (Store.notes.any { it.archived && it.deleted == 0L && it.isScanArea }) fl.add("archive" to "Archiwum")
         } else {
             fl.add("today" to "Dziś")
             fl.addAll(listOf("text" to "Notatki", "list" to "Listy"))
             if (Store.notes.any { it.shared && it.deleted == 0L }) fl.add("shared" to "Wspólne")
-            fl.addAll(listOf("photo" to "Zdjęcia", "audio" to "Nagrania", "scan" to "Skany", "remind" to "Przypomnienia"))
-            Store.labels(false).forEach { fl.add("l:$it" to "#$it") }
-            if (Store.notes.any { it.archived && it.deleted == 0L && !it.isRecipe }) fl.add("archive" to "Archiwum")
+            fl.addAll(listOf("photo" to "Zdjęcia", "audio" to "Nagrania", "remind" to "Przypomnienia"))
+            Store.labels("notes").forEach { fl.add("l:$it" to "#$it") }
+            if (Store.notes.any { it.archived && it.deleted == 0L && Store.area(it) == "notes" }) fl.add("archive" to "Archiwum")
         }
-        if (Store.notes.any { it.deleted > 0 && it.isRecipe == recipes }) fl.add("trash" to "Kosz")
+        if (Store.notes.any { it.deleted > 0 && Store.area(it) == area }) fl.add("trash" to "Kosz")
         for ((k, label) in fl) chips.addView(btn(label, filter == k, 13f) { filter = k; render() }, lp(WRAP, WRAP).apply { rightMargin = dp(8) })
         col.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) }, lp(top = 14))
         col.addView(list, lp(top = 4))
@@ -600,6 +631,7 @@ class MainActivity : Activity() {
         if (all.isEmpty()) {
             list.addView(tv(when {
                 area == "recipes" && query.isBlank() && filter == "all" -> "Nie masz jeszcze przepisów. Dodaj pierwszy albo zaimportuj z linku do strony z przepisem."
+                area == "scans" && query.isBlank() && filter == "all" -> "Nie masz jeszcze skanów. Zeskanuj dokument lub wizytówkę albo wczytaj stare skany z folderu."
                 Store.notes.isEmpty() -> "Pusto. Dodaj pierwszą notatkę przyciskami powyżej."
                 else -> "Nic nie znaleziono."
             }, 15f, color = dim), lp(top = 18))
@@ -675,7 +707,7 @@ class MainActivity : Activity() {
         sheet("Opróżnić kosz?") { col, d ->
             col.addView(tv("Wpisy z kosza zostaną usunięte na zawsze.", 14f, color = dim), lp(top = 6))
             col.addView(primary("Tak, opróżnij") {
-                Store.notes.filter { it.deleted > 0 && it.isRecipe == (area == "recipes") }.forEach { deleteForever(it) }
+                Store.notes.filter { it.deleted > 0 && Store.area(it) == area }.forEach { deleteForever(it) }
                 d.dismiss(); filter = "all"; render()
             }, lp(top = 12))
             col.addView(btn("Anuluj") { d.dismiss() }, lp(top = 8))
@@ -799,10 +831,10 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ tworzenie
     private fun newNote(kind: String) {
         when (kind) {
-            "scan" -> startScan()
-            "record" -> withMic { startRecording(null) }
+            "scan" -> { area = "scans"; startScan() }
+            "record" -> withMic { area = "notes"; startRecording(null) }
             else -> {
-                if (area == "recipes") area = "notes"
+                area = "notes"
                 val n = Note(type = if (kind == "list") "list" else "text")
                 Store.notes.add(n)
                 Store.touch(n)
@@ -834,6 +866,7 @@ class MainActivity : Activity() {
 
     private fun openNoteNow(n: Note) {
         if (screen == "edit") saveCurrent()
+        if (n.deleted == 0L && !n.template) area = Store.area(n)
         cur = n
         player?.release()
         player = null
@@ -1222,6 +1255,12 @@ class MainActivity : Activity() {
             }
             watch(body) { n.body = it; Store.touch(n) }
             col.addView(body, lp(top = 6))
+            section(col, "Wskazówki", 18)
+            val tips = edit(n.tips, "Porady – każda w nowej linii", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES).apply {
+                gravity = Gravity.TOP; minLines = 2
+            }
+            watch(tips) { n.tips = it; Store.touch(n) }
+            col.addView(tips, lp(top = 6))
             col.addView(btn("Etykiety: " + n.labels.joinToString(", ").ifEmpty { "dodaj (np. Obiad, Ciasto)" }, size = 13f) { labelSheet(n) }, lp(WRAP, WRAP, top = 12))
             col.addView(primary("Gotowe") { recipeEdit = false; Store.save(); render() }, lp(top = 16))
             return
@@ -1283,9 +1322,20 @@ class MainActivity : Activity() {
                     background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(accent) }
                 }
                 r.addView(num, LinearLayout.LayoutParams(dp(28), dp(28)))
-                r.addView(tv(s.replace(Regex("^\\d+[.)]\\s*"), ""), if (cookMode) 20f else 16f), lp(0, WRAP, 1f).apply { leftMargin = dp(12) })
+                r.addView(TextView(this).apply {
+                    text = Fmt.render(s.replace(Regex("^\\d+[.)]\\s*"), ""))
+                    textSize = if (cookMode) 20f else 16f
+                    setTextColor(fg)
+                    setLineSpacing(0f, 1.15f)
+                }, lp(0, WRAP, 1f).apply { leftMargin = dp(12) })
                 col.addView(r, lp(top = 8))
             }
+        }
+        val tipsList = n.tips.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (tipsList.isNotEmpty()) {
+            section(col, "Wskazówki", 20)
+            val tp = panel(col)
+            tipsList.forEach { t -> tp.addView(tv("💡 $t", if (cookMode) 18f else 15f), lp(top = 8)) }
         }
         val br = hbox()
         br.addView(btn(if (cookMode) "Zakończ gotowanie" else "👩‍🍳 Tryb gotowania", cookMode, 13f) {
@@ -1345,9 +1395,11 @@ class MainActivity : Activity() {
                 d.dismiss()
                 val (pd, label) = progress("Pobieram przepis")
                 io.execute {
+                    var err = ""
                     val res = try {
                         RecipeImport.load(u)
                     } catch (x: Exception) {
+                        err = x.message ?: ""
                         null
                     }
                     var photo = ""
@@ -1359,13 +1411,14 @@ class MainActivity : Activity() {
                     h.post {
                         pd.dismiss()
                         if (res == null) {
-                            toast("Nie udało się pobrać strony")
+                            toast("Nie udało się pobrać strony" + if (err.isNotEmpty()) ": $err" else "")
                             return@post
                         }
                         area = "recipes"
                         val n = Note(type = "recipe", title = res.title, servings = res.servings, cookTime = res.time, source = res.url)
                         res.ingredients.forEach { n.items.add(Item(it)) }
                         n.body = res.steps.joinToString("\n")
+                        n.tips = res.tips.joinToString("\n")
                         if (photo.isNotEmpty()) n.photos.add(photo)
                         Store.notes.add(n)
                         Store.touch(n)
@@ -1574,7 +1627,7 @@ class MainActivity : Activity() {
 
     private fun labelSheet(n: Note) {
         sheet("Etykiety") { col, d ->
-            val all = (Store.labels() + n.labels).distinct().sorted()
+            val all = (Store.labels(Store.area(n)) + n.labels).distinct().sorted()
             if (all.isNotEmpty()) {
                 val r = vbox()
                 all.forEach { l ->
@@ -2012,11 +2065,10 @@ class MainActivity : Activity() {
             val www = field("Strona", data.www, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
             val addr = field("Adres", data.address)
             fun saveNote(): Note {
-                val n = Note(type = "text", title = "Wizytówka: " + name.text.toString().ifBlank { company.text.toString() }.ifBlank { "kontakt" })
+                val n = Note(type = "card", title = name.text.toString().ifBlank { company.text.toString() }.ifBlank { "Wizytówka" })
                 n.body = listOf(name, company, title, phone, email, www, addr).map { it.text.toString().trim() }.filter { it.isNotEmpty() }.joinToString("\n")
                 n.photos.add(photo)
                 n.photoText = raw
-                n.labels.add("Wizytówki")
                 Store.notes.add(n)
                 Store.touch(n)
                 Store.save()
@@ -2494,6 +2546,21 @@ class MainActivity : Activity() {
                 val res = GmsDocumentScanningResult.fromActivityResultIntent(data) ?: return
                 val img = res.pages?.firstOrNull()?.imageUri ?: return
                 processCard(img)
+            }
+            REQ_PDF -> {
+                val uris = ArrayList<Uri>()
+                data?.clipData?.let { c -> for (k in 0 until c.itemCount) uris.add(c.getItemAt(k).uri) }
+                if (uris.isEmpty()) data?.data?.let { uris.add(it) }
+                if (uris.isEmpty()) return
+                val (d, label) = progress("Import PDF")
+                io.execute {
+                    val n = try {
+                        Scans.importFiles(this, uris.map { Pair(it, Scans.displayName(this, it)) }) { m -> h.post { label.text = m } }
+                    } catch (e: Exception) {
+                        -1
+                    }
+                    h.post { d.dismiss(); toast(if (n >= 0) "Zaimportowano dokumentów: $n" else "Nie udało się wczytać plików"); area = "scans"; render() }
+                }
             }
             REQ_INVITE -> {
                 val uri = data?.data ?: return

@@ -119,9 +119,10 @@ object Shop {
     }
 }
 
-/** Przeliczanie ilości w składnikach przy zmianie liczby porcji. */
+/** Przeliczanie ilości w składnikach przy zmianie liczby porcji (wszystkie liczby w linijce, poza cm, °C, %). */
 object Scale {
-    private val NUM = Regex("^(\\d+[.,]\\d+|\\d+\\s*/\\s*\\d+|\\d+\\s+\\d+/\\d+|\\d+|½|¼|¾)")
+    private val NUM = Regex("(?<![\\d,./])(\\d+\\s+\\d+/\\d+|\\d+/\\d+|\\d+[.,]\\d+|\\d+|½|¼|¾|⅓|⅔)(?!\\d|[.,/]\\d)(?!\\s*(?:cm|mm|°|%|stopni|st\\.|x\\s*\\d))")
+    private val WORDS = listOf("półtorej" to 1.5, "półtora" to 1.5, "pół" to 0.5)
 
     private fun parse(s: String): Double? {
         val t = s.trim()
@@ -129,39 +130,58 @@ object Scale {
             t == "½" -> 0.5
             t == "¼" -> 0.25
             t == "¾" -> 0.75
+            t == "⅓" -> 1.0 / 3
+            t == "⅔" -> 2.0 / 3
             t.contains(" ") && t.contains("/") -> {
-                val (w, f) = t.split(Regex("\\s+"), 2)
-                val (a, b) = f.split("/")
-                w.toDouble() + a.trim().toDouble() / b.trim().toDouble()
+                val parts = t.split(Regex("\\s+"), 2)
+                val f = parts[1].split("/")
+                parts[0].toDouble() + f[0].trim().toDouble() / f[1].trim().toDouble()
             }
             t.contains("/") -> {
-                val (a, b) = t.split("/")
-                a.trim().toDouble() / b.trim().toDouble()
+                val f = t.split("/")
+                f[0].trim().toDouble() / f[1].trim().toDouble()
             }
             else -> t.replace(",", ".").toDoubleOrNull()
         }
     }
 
     private fun fmt(v: Double): String {
-        val r = Math.round(v * 100) / 100.0
+        val frac = v - Math.floor(v)
+        val whole = Math.floor(v).toLong()
+        fun withWhole(sym: String) = if (whole > 0) "$whole $sym" else sym
         return when {
-            Math.abs(r - Math.round(r)) < 0.01 -> Math.round(r).toString()
-            Math.abs(r - 0.5) < 0.01 -> "½"
-            Math.abs(r - 0.25) < 0.01 -> "¼"
-            Math.abs(r - 0.75) < 0.01 -> "¾"
-            else -> String.format(Locale("pl"), "%.2f", r).trimEnd('0').trimEnd(',')
+            v >= 20 -> Math.round(v).toString()
+            Math.abs(frac) < 0.04 -> whole.toString()
+            Math.abs(frac - 1) < 0.04 -> (whole + 1).toString()
+            Math.abs(frac - 0.5) < 0.04 -> withWhole("½")
+            Math.abs(frac - 0.25) < 0.04 -> withWhole("¼")
+            Math.abs(frac - 0.75) < 0.04 -> withWhole("¾")
+            Math.abs(frac - 1.0 / 3) < 0.04 -> withWhole("⅓")
+            Math.abs(frac - 2.0 / 3) < 0.04 -> withWhole("⅔")
+            else -> String.format(Locale("pl"), "%.1f", v).removeSuffix(",0")
         }
     }
 
     fun line(text: String, factor: Double): String {
         if (factor == 1.0) return text
-        val m = NUM.find(text.trim()) ?: return text
-        val v = (try {
-            parse(m.value)
+        val lower = text.lowercase(Locale("pl"))
+        // słowa na początku: „pół łyżeczki”, „półtorej szklanki”
+        for ((w, v) in WORDS) {
+            if (lower.startsWith("$w ")) {
+                val rest = text.substring(w.length)
+                return fmt(v * factor) + NUM.replace(rest) { m -> scaleMatch(m.value, factor) }
+            }
+        }
+        return NUM.replace(text) { m -> scaleMatch(m.value, factor) }
+    }
+
+    private fun scaleMatch(v: String, factor: Double): String {
+        val d = try {
+            parse(v)
         } catch (e: Exception) {
             null
-        }) ?: return text
-        return fmt(v * factor) + text.trim().substring(m.value.length)
+        }
+        return if (d == null) v else fmt(d * factor)
     }
 }
 
@@ -195,121 +215,5 @@ object BizCard {
                 l.filter { it.isLetter() }.all { it.isUpperCase() }
         } ?: ""
         return d
-    }
-}
-
-/** Import przepisu ze strony internetowej (dane schema.org Recipe, jak w większości serwisów kulinarnych). */
-object RecipeImport {
-    class Result(val title: String, val ingredients: List<String>, val steps: List<String>, val servings: Int,
-                 val time: String, val image: String, val url: String)
-
-    private fun fetch(url: String): String {
-        var u = url
-        repeat(5) {
-            val c = URL(u).openConnection() as HttpURLConnection
-            c.instanceFollowRedirects = false
-            c.connectTimeout = 12_000
-            c.readTimeout = 20_000
-            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
-            c.setRequestProperty("Accept-Language", "pl,en;q=0.8")
-            val code = c.responseCode
-            if (code in 300..399) {
-                u = URL(URL(u), c.getHeaderField("Location") ?: return "").toString()
-                c.disconnect()
-            } else {
-                if (code != 200) throw java.io.IOException("Strona odpowiedziała kodem $code")
-                return c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
-            }
-        }
-        return ""
-    }
-
-    private fun isRecipe(o: JSONObject): Boolean {
-        val t = o.opt("@type")
-        return t == "Recipe" || (t is JSONArray && (0 until t.length()).any { t.optString(it) == "Recipe" })
-    }
-
-    private fun findRecipe(x: Any?): JSONObject? {
-        when (x) {
-            is JSONObject -> {
-                if (isRecipe(x)) return x
-                findRecipe(x.opt("@graph"))?.let { return it }
-                findRecipe(x.opt("mainEntity"))?.let { return it }
-            }
-            is JSONArray -> for (k in 0 until x.length()) findRecipe(x.opt(k))?.let { return it }
-        }
-        return null
-    }
-
-    private fun clean(s: String) = s.replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").replace("&amp;", "&")
-        .replace("&quot;", "\"").replace("&#39;", "'").replace(Regex("\\s+"), " ").trim()
-
-    private fun steps(x: Any?, out: MutableList<String>) {
-        when (x) {
-            is String -> x.split(Regex("\\n+|(?<=\\.)\\s{2,}")).map { clean(it) }.filter { it.isNotEmpty() }.forEach { out.add(it) }
-            is JSONArray -> for (k in 0 until x.length()) steps(x.opt(k), out)
-            is JSONObject -> {
-                if (x.has("itemListElement")) steps(x.opt("itemListElement"), out)
-                else x.optString("text").let { if (it.isNotBlank()) out.add(clean(it)) }
-            }
-        }
-    }
-
-    private fun duration(iso: String): String {
-        val m = Regex("P(?:\\d+D)?T?(?:(\\d+)H)?(?:(\\d+)M)?").find(iso) ?: return ""
-        val hh = m.groupValues[1].toIntOrNull() ?: 0
-        val mm = m.groupValues[2].toIntOrNull() ?: 0
-        return when {
-            hh > 0 && mm > 0 -> "$hh h $mm min"
-            hh > 0 -> "$hh h"
-            mm > 0 -> "$mm min"
-            else -> ""
-        }
-    }
-
-    fun load(url: String): Result {
-        val html = fetch(url)
-        val blocks = Regex("<script[^>]*application/ld\\+json[^>]*>(.*?)</script>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-            .findAll(html).map { it.groupValues[1].trim() }
-        var r: JSONObject? = null
-        for (b in blocks) {
-            val parsed: Any? = try {
-                if (b.startsWith("[")) JSONArray(b) else JSONObject(b)
-            } catch (e: Exception) {
-                null
-            }
-            r = findRecipe(parsed)
-            if (r != null) break
-        }
-        val title = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)).find(html)?.groupValues?.get(1)?.let { clean(it) } ?: "Przepis"
-        val rec = r ?: return Result(title, emptyList(), emptyList(), 0, "", "", url)
-        val ing = rec.optJSONArray("recipeIngredient")?.let { a -> (0 until a.length()).map { clean(a.optString(it)) }.filter { it.isNotEmpty() } } ?: emptyList()
-        val st = ArrayList<String>()
-        steps(rec.opt("recipeInstructions"), st)
-        val yieldAny = rec.opt("recipeYield")
-        val yieldStr = if (yieldAny is JSONArray) yieldAny.optString(0) else yieldAny?.toString() ?: ""
-        val serv = Regex("\\d+").find(yieldStr)?.value?.toIntOrNull() ?: 0
-        val time = duration(rec.optString("totalTime").ifEmpty { rec.optString("cookTime") })
-        val imgAny = rec.opt("image")
-        val img = when (imgAny) {
-            is String -> imgAny
-            is JSONArray -> imgAny.opt(0).let { if (it is JSONObject) it.optString("url") else it?.toString() ?: "" }
-            is JSONObject -> imgAny.optString("url")
-            else -> ""
-        }
-        return Result(clean(rec.optString("name")).ifEmpty { title }, ing, st, serv, time, img, url)
-    }
-
-    fun downloadImage(url: String, dest: File): Boolean = try {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) Notatnik")
-        c.connectTimeout = 12_000
-        c.readTimeout = 20_000
-        if (c.responseCode == 200) {
-            c.inputStream.use { i -> dest.outputStream().use { o -> i.copyTo(o) } }
-            true
-        } else false
-    } catch (e: Exception) {
-        false
     }
 }

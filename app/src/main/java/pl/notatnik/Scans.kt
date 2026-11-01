@@ -176,11 +176,25 @@ object Scans {
                 if (name.endsWith(".pdf", true)) found.add(Pair(DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)), name))
             }
         }
+        return importFiles(ctx, found, status)
+    }
+
+    /** Nazwa pliku z adresu dokumentu. */
+    fun displayName(ctx: Context, uri: Uri): String = try {
+        ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        } ?: "Dokument.pdf"
+    } catch (e: Exception) {
+        "Dokument.pdf"
+    }
+
+    /** Import wybranych plików PDF (tekst odczytany z pierwszych 10 stron). */
+    fun importFiles(ctx: Context, files: List<Pair<Uri, String>>, status: (String) -> Unit): Int {
         var n = 0
-        for ((k, pair) in found.withIndex()) {
-            val title = pair.second.removeSuffix(".pdf").removeSuffix(".PDF")
-            if (Store.notes.any { it.type == "scan" && it.title == title }) continue
-            status("Importuję skany… ${k + 1}/${found.size}")
+        for ((k, pair) in files.withIndex()) {
+            val title = pair.second.replace(Regex("(?i)\\.pdf$"), "")
+            if (Store.notes.any { it.type == "scan" && it.title == title && it.deleted == 0L }) continue
+            status("Importuję… ${k + 1}/${files.size}")
             val note = Note(type = "scan", title = title)
             val file = File(Store.dir("scans"), "${note.id}.pdf")
             if (!copy(ctx, pair.first, file)) continue
@@ -193,7 +207,6 @@ object Scans {
                 texts.add(recognize(bm))
             }
             note.ocr = texts.joinToString("\n\n")
-            note.created = System.currentTimeMillis()
             Store.notes.add(note)
             n++
         }

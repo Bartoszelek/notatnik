@@ -63,10 +63,12 @@ class Note(
     var locked: Boolean = false,
     var servings: Int = 0,
     var cookTime: String = "",
-    var source: String = ""
+    var source: String = "",
+    var tips: String = ""
 ) {
     val isList get() = type == "list"
     val isRecipe get() = type == "recipe"
+    val isScanArea get() = type == "scan" || type == "card"
 
     /** Pozycje bez usuniętych (usunięte zostają jako „ślad” na wspólnych listach). */
     val live: List<Item> get() = items.filter { !it.del }
@@ -79,11 +81,11 @@ class Note(
         .put("repeat", repeat).put("repDays", repDays).put("repEvery", repEvery).put("repUnit", repUnit)
         .put("photos", JSONArray(photos)).put("photoText", photoText).put("deleted", deleted).put("shared", shared)
         .put("sharedSha", sharedSha).put("syncedAt", syncedAt).put("template", template).put("locked", locked)
-        .put("servings", servings).put("cookTime", cookTime).put("source", source)
+        .put("servings", servings).put("cookTime", cookTime).put("source", source).put("tips", tips)
 
     /** Tekst do wyszukiwania. */
     fun searchText(): String = if (locked) title else
-        title + " " + body + " " + live.joinToString(" ") { it.text } + " " + ocr + " " + photoText + " " + labels.joinToString(" ")
+        title + " " + body + " " + live.joinToString(" ") { it.text } + " " + ocr + " " + photoText + " " + tips + " " + labels.joinToString(" ")
 
     companion object {
         fun fromJson(o: JSONObject): Note {
@@ -99,7 +101,7 @@ class Note(
                 repUnit = o.optString("repUnit", "d"), photoText = o.optString("photoText"), deleted = o.optLong("deleted"),
                 shared = o.optBoolean("shared"), sharedSha = o.optString("sharedSha"), syncedAt = o.optLong("syncedAt"),
                 template = o.optBoolean("template"), locked = o.optBoolean("locked"), servings = o.optInt("servings"),
-                cookTime = o.optString("cookTime"), source = o.optString("source")
+                cookTime = o.optString("cookTime"), source = o.optString("source"), tips = o.optString("tips")
             )
             o.optJSONArray("photos")?.let { a -> for (k in 0 until a.length()) n.photos.add(a.getString(k)) }
             if (n.image.isNotEmpty() && n.type != "scan" && n.photos.isEmpty()) {
@@ -189,7 +191,14 @@ object Store {
     fun norm(s: String): String =
         Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").replace("ł", "l")
 
-    fun labels(recipes: Boolean = false): List<String> = notes.filter { it.deleted == 0L && it.isRecipe == recipes && !it.template }
+    /** Obszar wpisu: notes, recipes albo scans. */
+    fun area(n: Note) = when {
+        n.isRecipe -> "recipes"
+        n.isScanArea -> "scans"
+        else -> "notes"
+    }
+
+    fun labels(area: String = "notes"): List<String> = notes.filter { it.deleted == 0L && area(it) == area && !it.template }
         .flatMap { it.labels }.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
 
     /** Usunięcie pozycji listy (na wspólnej liście zostaje ślad, żeby zniknęła też u drugiej osoby). */
