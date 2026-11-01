@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/qbg"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitXY"
+        android:src="@drawable/wbg" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <LinearLayout android:id="@+id/q0" style="@style/QBtn">
+            <ImageView android:id="@+id/qi0" style="@style/QIcon" android:src="@drawable/ic_note" />
+            <TextView android:id="@+id/ql0" style="@style/QLabel" android:text="Notatka" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/q1" style="@style/QBtn">
+            <ImageView android:id="@+id/qi1" style="@style/QIcon" android:src="@drawable/ic_check_list" />
+            <TextView android:id="@+id/ql1" style="@style/QLabel" android:text="Lista" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/q2" style="@style/QBtn">
+            <ImageView android:id="@+id/qi2" style="@style/QIcon" android:src="@drawable/ic_mic" />
+            <TextView android:id="@+id/ql2" style="@style/QLabel" android:text="Dyktuj" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/q3" style="@style/QBtn">
+            <ImageView android:id="@+id/qi3" style="@style/QIcon" android:src="@drawable/ic_stop" />
+            <TextView android:id="@+id/ql3" style="@style/QLabel" android:text="Nagraj" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/q4" style="@style/QBtn">
+            <ImageView android:id="@+id/qi4" style="@style/QIcon" android:src="@drawable/ic_scan" />
+            <TextView android:id="@+id/ql4" style="@style/QLabel" android:text="Skanuj" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
