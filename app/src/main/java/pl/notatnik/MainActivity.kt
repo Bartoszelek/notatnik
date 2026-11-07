@@ -81,6 +81,7 @@ class MainActivity : Activity() {
     private val REQ_CARD = 80
     private val REQ_INVITE = 81
     private val REQ_PDF = 82
+    private val REQ_AUDIO = 91
     private val ACTION_INSTALL = "pl.notatnik.INSTALL_RESULT"
 
     private lateinit var root: FrameLayout
@@ -134,6 +135,7 @@ class MainActivity : Activity() {
         root.fitsSystemWindows = true
         setContentView(root)
         pendingIntent = intent
+        intent?.getStringExtra("area")?.let { area = it }
         render()
         consumeIntent()
         checkUpdate(false)
@@ -141,6 +143,12 @@ class MainActivity : Activity() {
         Store.purgeTrash()
         Shared.schedule(this)
         NotesWidget.updateAll(this)
+        MeetCfg.load(this)
+        if (MeetingService.recover(this) > 0) toast("Odzyskano przerwane nagranie – jest w Nagraniach")
+        ProcessService.cleanup(this)
+        if (ProcessService.busyId == null && ProcessService.pending().isNotEmpty() && Models.ready(this, MeetCfg.model)) {
+            try { ProcessService.start(this) } catch (e: Exception) {}
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -151,6 +159,9 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ProcessService.listener = {
+            if ((screen == "edit" && cur?.type == "meeting") || (screen == "lib" && area == "recordings")) render()
+        }
         if (screen == "lib") render()
         h.post(tick)
         h.post(sharedTick)
@@ -169,6 +180,7 @@ class MainActivity : Activity() {
     private fun isEditing(): Boolean = currentFocus is EditText
 
     override fun onPause() {
+        ProcessService.listener = null
         h.removeCallbacks(tick)
         h.removeCallbacks(sharedTick)
         saveCurrent()
@@ -455,6 +467,9 @@ class MainActivity : Activity() {
             filter == "list" -> n.isList
             filter == "shared" -> n.shared
             filter == "audio" -> n.type == "audio" || n.audio.isNotEmpty()
+            filter == "meet" -> n.type == "meeting"
+            filter == "dict" -> n.type == "audio"
+            filter == "pending" -> n.type == "meeting" && MeetMeta.of(n).status != "done"
             filter == "docs" -> n.type == "scan"
             filter == "cards" -> n.type == "card"
             filter == "photo" -> n.photos.isNotEmpty()
@@ -476,7 +491,7 @@ class MainActivity : Activity() {
 
     private fun areaTabs(onHero: Boolean): View {
         val r = hbox()
-        listOf("notes" to "Notatki", "recipes" to "Przepisy", "scans" to "Skany").forEach { (k, label) ->
+        listOf("notes" to "Notatki", "recordings" to "Nagrania", "recipes" to "Przepisy", "scans" to "Skany").forEach { (k, label) ->
             val sel = k == area
             val t = if (onHero) tv(label, 13f, true, if (sel) Theme.accent else Color.WHITE).apply {
                 background = round(if (sel) Color.WHITE else Theme.withAlpha(Color.WHITE, 0.2f), 16)
@@ -485,14 +500,15 @@ class MainActivity : Activity() {
             } else btn(label, sel, 14f) { switchArea(k) }
             r.addView(t, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
         }
-        return r
+        return HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(r) }
     }
 
     private fun renderLib() {
         val col = page()
         val recipes = area == "recipes"
         val scans = area == "scans"
-        val areaTitle = when (area) { "recipes" -> "Przepisy"; "scans" -> "Skany"; else -> "Notatnik" }
+        val recs = area == "recordings"
+        val areaTitle = when (area) { "recipes" -> "Przepisy"; "scans" -> "Skany"; "recordings" -> "Nagrania"; else -> "Notatnik" }
         val total = Store.notes.count { it.deleted == 0L && !it.archived && !it.template && Store.area(it) == area }
         if (Store.eink) {
             val head = hbox()
@@ -518,6 +534,8 @@ class MainActivity : Activity() {
             hero.addView(tv(when {
                 recipes -> "$total przepisów"
                 scans -> "$total dokumentów i wizytówek"
+                recs -> "$total nagrań" + Store.notes.count { it.type == "meeting" && it.deleted == 0L && MeetMeta.of(it).status != "done" }
+                    .let { if (it > 0) " · $it do przetworzenia" else "" }
                 else -> "$total wpisów" + (if (rem > 0) " · $rem przypomnień" else "")
             }, 13f, false, Theme.withAlpha(Color.WHITE, 0.85f)))
             col.addView(hero, lp(top = 4))
@@ -533,6 +551,16 @@ class MainActivity : Activity() {
             box.addView(btn("Zainstaluj", true, 14f) { installUpdate() })
             col.addView(box, lp(top = 12))
         }
+        if (MeetingService.running) {
+            val box = hbox().apply {
+                background = round(if (Store.eink) bg else 0xFFDC2626.toInt(), 16, if (Store.eink) 2 else 0, fg); setPadding(dp(16), dp(12), dp(12), dp(12))
+                setOnClickListener { openMeeting() }
+            }
+            box.addView(tv((if (MeetingService.paused) "❚❚ " else "● ") + "Spotkanie: " + MeetingService.title.ifBlank { "nagrywanie" }, 16f, true,
+                if (Store.eink) fg else Color.WHITE).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, lp(0, WRAP, 1f))
+            box.addView(btn("Otwórz", true, 14f) { openMeeting() })
+            col.addView(box, lp(top = 12))
+        }
         if (RecorderService.running) {
             val box = hbox().apply { background = round(if (Store.eink) bg else 0xFFDC2626.toInt(), 16, if (Store.eink) 2 else 0, fg); setPadding(dp(16), dp(12), dp(12), dp(12)) }
             val t = tv("Nagrywanie…", 16f, true, if (Store.eink) fg else Color.WHITE)
@@ -545,6 +573,7 @@ class MainActivity : Activity() {
         val search = edit(query, when {
             recipes -> "Szukaj przepisu lub składnika"
             scans -> "Szukaj w treści dokumentów i wizytówek"
+            recs -> "Szukaj w nagraniach i podsumowaniach"
             else -> "Szukaj w notatkach, listach i zdjęciach"
         }, InputType.TYPE_CLASS_TEXT).apply { setSingleLine(true) }
         val list = vbox()
@@ -557,6 +586,20 @@ class MainActivity : Activity() {
                 Triple(R.drawable.ic_plus, "Nowy przepis") { newRecipe() },
                 Triple(R.drawable.ic_open, "Z linku") { recipeFromLink("") },
                 Triple(R.drawable.ic_camera, "Ze zdjęcia") { val r = newRecipe(); addPhoto(r) }
+            )
+            recs -> listOf(
+                Triple(R.drawable.ic_mic, "Spotkanie") { openMeeting() },
+                Triple(R.drawable.ic_stop, "Dyktafon") { newNote("record") },
+                Triple(R.drawable.ic_open, "Importuj") {
+                    try {
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("audio/*")
+                            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true), REQ_AUDIO)
+                    } catch (e: Exception) {
+                        toast("Nie mogę otworzyć plików")
+                    }
+                },
+                Triple(R.drawable.ic_plus, "Skrót") { pinMeetingShortcut() },
+                Triple(R.drawable.ic_settings, "Ustawienia") { meetingSettings() }
             )
             scans -> listOf(
                 Triple(R.drawable.ic_scan, "Dokument") { startScan() },
@@ -598,6 +641,10 @@ class MainActivity : Activity() {
         val fl = mutableListOf("all" to "Wszystko")
         if (recipes) {
             Store.labels("recipes").forEach { fl.add("l:$it" to it) }
+        } else if (recs) {
+            fl.addAll(listOf("meet" to "Spotkania", "dict" to "Dyktafon", "pending" to "Do przetworzenia"))
+            Store.labels("recordings").forEach { fl.add("l:$it" to "#$it") }
+            if (Store.notes.any { it.archived && it.deleted == 0L && Store.area(it) == "recordings" }) fl.add("archive" to "Archiwum")
         } else if (scans) {
             fl.addAll(listOf("docs" to "Dokumenty", "cards" to "Wizytówki", "remind" to "Przypomnienia"))
             Store.labels("scans").forEach { fl.add("l:$it" to "#$it") }
@@ -606,7 +653,7 @@ class MainActivity : Activity() {
             fl.add("today" to "Dziś")
             fl.addAll(listOf("text" to "Notatki", "list" to "Listy"))
             if (Store.notes.any { it.shared && it.deleted == 0L }) fl.add("shared" to "Wspólne")
-            fl.addAll(listOf("photo" to "Zdjęcia", "audio" to "Nagrania", "remind" to "Przypomnienia"))
+            fl.addAll(listOf("photo" to "Zdjęcia", "remind" to "Przypomnienia"))
             Store.labels("notes").forEach { fl.add("l:$it" to "#$it") }
             if (Store.notes.any { it.archived && it.deleted == 0L && Store.area(it) == "notes" }) fl.add("archive" to "Archiwum")
         }
@@ -632,6 +679,7 @@ class MainActivity : Activity() {
             list.addView(tv(when {
                 area == "recipes" && query.isBlank() && filter == "all" -> "Nie masz jeszcze przepisów. Dodaj pierwszy albo zaimportuj z linku do strony z przepisem."
                 area == "scans" && query.isBlank() && filter == "all" -> "Nie masz jeszcze skanów. Zeskanuj dokument lub wizytówkę albo wczytaj stare skany z folderu."
+                area == "recordings" && query.isBlank() && filter == "all" -> "Nie masz jeszcze nagrań. Stuknij „Spotkanie”, żeby nagrać spotkanie, albo „Skrót”, żeby dodać przycisk nagrywania na pulpit."
                 Store.notes.isEmpty() -> "Pusto. Dodaj pierwszą notatkę przyciskami powyżej."
                 else -> "Nic nie znaleziono."
             }, 15f, color = dim), lp(top = 18))
@@ -832,7 +880,7 @@ class MainActivity : Activity() {
     private fun newNote(kind: String) {
         when (kind) {
             "scan" -> { area = "scans"; startScan() }
-            "record" -> withMic { area = "notes"; startRecording(null) }
+            "record" -> withMic { area = "recordings"; startRecording(null) }
             else -> {
                 area = "notes"
                 val n = Note(type = if (kind == "list") "list" else "text")
@@ -952,6 +1000,7 @@ class MainActivity : Activity() {
             "scan" -> scanView(col, n)
             else -> {
                 if (n.audio.isNotEmpty()) audioPlayer(col, n)
+                if (n.type == "meeting") meetingInfo(col, n)
                 val body = edit(n.body, if (n.audio.isNotEmpty()) "Notatka do nagrania" else "Notatka",
                     InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES, plain = true).apply {
                     textSize = 17f
@@ -969,6 +1018,7 @@ class MainActivity : Activity() {
                 })
                 col.addView(formatBar(body), lp(top = 6))
                 col.addView(body, lp(top = 4))
+                if (n.type == "meeting") meetingTail(col, n)
                 if (n.title.isEmpty() && n.body.isEmpty() && n.audio.isEmpty()) body.post { body.requestFocus() }
             }
         }
@@ -2525,6 +2575,15 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != Activity.RESULT_OK) return
         when (requestCode) {
+            REQ_AUDIO -> {
+                val uris = ArrayList<Uri>()
+                data?.clipData?.let { c -> for (k in 0 until c.itemCount) uris.add(c.getItemAt(k).uri) }
+                if (uris.isEmpty()) data?.data?.let { uris.add(it) }
+                var ok = 0
+                for (u in uris) if (ImportAudioActivity.importAudio(this, u) != null) ok++
+                toast(if (ok > 0) "Dodano do Nagrań: $ok" else "Nie udało się zaimportować")
+                area = "recordings"; render()
+            }
             REQ_SCAN -> {
                 val res = GmsDocumentScanningResult.fromActivityResultIntent(data) ?: return
                 val pdf = res.pdf ?: return
@@ -2604,5 +2663,306 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------ nagrania spotkań
+    private fun openMeeting() {
+        startActivity(Intent(this, MeetingActivity::class.java))
+    }
+
+    /** Ikonka „Spotkanie” na pulpicie (skrót do okienka nagrywania). */
+    private fun pinMeetingShortcut() {
+        val sm = getSystemService(android.content.pm.ShortcutManager::class.java)
+        if (sm == null || !sm.isRequestPinShortcutSupported) {
+            toast("Dodaj widżet „Spotkanie”: przytrzymaj pulpit → Widżety → Notatnik"); return
+        }
+        val info = android.content.pm.ShortcutInfo.Builder(this, "meeting")
+            .setShortLabel("Spotkanie")
+            .setLongLabel("Nagraj spotkanie")
+            .setIcon(android.graphics.drawable.Icon.createWithResource(this, R.mipmap.ic_launcher))
+            .setIntent(Intent(this, MeetingActivity::class.java).setAction("pl.notatnik.MEETING"))
+            .build()
+        sm.requestPinShortcut(info, null)
+        toast("Potwierdź dodanie skrótu na pulpicie. Możesz też dodać widżet „Spotkanie”.")
+    }
+
+    /** Informacje o spotkaniu w notatce: data, adresaci, znaczniki ★, status przetwarzania. */
+    private fun meetingInfo(col: LinearLayout, n: Note) {
+        val m = MeetMeta.of(n)
+        val p = panel(col)
+        val df = SimpleDateFormat("EEEE, d MMMM yyyy, HH:mm", Locale("pl"))
+        p.addView(tv("📅 " + df.format(Date(if (m.startedAt > 0) m.startedAt else n.created)) + " · " + hms(n.audioMs), 14f, true), lp(top = 2))
+        p.addView(tv(MeetCfg.templateName(m.template) + " · " + MeetCfg.langName(m.lang) + (if (m.offlineOnly) " · tylko offline" else "") +
+            (if (m.source == "import") " · zaimportowane" else ""), 12f, color = dim), lp(top = 2))
+        if (m.calendar.isNotBlank()) p.addView(tv("Z kalendarza: " + m.calendar, 12f, color = dim), lp(top = 2))
+        if (m.sendEmail && m.recipients.isNotEmpty()) p.addView(tv("✉ " + (if (m.emailed) "Wysłano do: " else "Podsumowanie pójdzie do: ") +
+            m.recipients.joinToString(", "), 12f, color = dim), lp(top = 4))
+        val busy = m.status == "processing" && (ProcessService.busyId == n.id || m.stage.isNotBlank())
+        p.addView(tv(when {
+            m.status == "done" -> "✓ Przetworzone" + if (m.summaryBy == "offline") " (podsumowanie offline)" else " (podsumowanie Groq)"
+            busy -> "⏳ " + m.stage.ifBlank { "Przetwarzanie" } + " – " + m.progress + "%"
+            m.status == "error" -> "⚠ Błąd przetwarzania: " + m.error
+            else -> "Czeka na przetworzenie"
+        }, 13f, true, if (m.status == "error") 0xFFDC2626.toInt() else accent), lp(top = 8))
+        if (m.status == "done" && m.error.isNotBlank()) p.addView(tv("⚠ " + m.error, 12f, false, 0xFFD97706.toInt()).apply { setTextIsSelectable(true) }, lp(top = 4))
+        if (m.status == "error") p.addView(tv("Zaznacz i skopiuj komunikat, jeśli chcesz go przesłać.", 11f, color = dim), lp(top = 2))
+        val acts = hbox()
+        if (!busy) acts.addView(btn(if (m.status == "done") "Przetwórz ponownie" else "Przetwórz teraz", m.status != "done", 13f) {
+            if (!Models.ready(this, MeetCfg.model)) toast("Pobieram modele rozpoznawania mowy (ok. ${Models.totalMb(MeetCfg.model)} MB) – najlepiej na Wi-Fi")
+            val mm = MeetMeta.of(n); mm.status = "pending"; mm.emailed = false; mm.stage = "W kolejce"; mm.progress = 0
+            n.meta = mm.toJson(); Store.touch(n); Store.save()
+            ProcessService.start(this, n.id); render()
+        }, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
+        if (m.status == "done" && n.body.isNotBlank()) acts.addView(btn("✉ Wyślij e-mail", size = 13f) { emailSummary(n) }, lp(WRAP, WRAP))
+        if (acts.childCount > 0) p.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(acts) }, lp(top = 8))
+        if (m.marks.isNotEmpty()) {
+            p.addView(tv("★ Ważne momenty – stuknij, żeby odsłuchać", 13f, true), lp(top = 10))
+            for (t in m.marks) p.addView(btn("★ " + MeetingService.stamp(t), size = 13f) { playFrom(n, t) }, lp(WRAP, WRAP, top = 4))
+        }
+    }
+
+    private fun playFrom(n: Note, ms: Long) {
+        try {
+            val mp = player ?: MediaPlayer().apply { setDataSource(n.audio); prepare() }.also { player = it }
+            mp.seekTo((ms - 3000).coerceAtLeast(0).toInt())
+            mp.start()
+        } catch (e: Exception) {
+            toast("Nie mogę odtworzyć nagrania")
+        }
+    }
+
+    /** Ustawienia nagrań: e-mail, poczta SMTP, Groq, słownik, przechowywanie. */
+    private fun meetingSettings() {
+        MeetCfg.load(this)
+        sheet("Ustawienia nagrań") { col, d ->
+            col.addView(tv("Domyślny e-mail na podsumowania", 15f, true), lp(top = 4))
+            val email = edit(MeetCfg.email, "np. bartosz@firma.pl", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+            col.addView(email, lp(top = 6))
+
+            col.addView(tv("Poczta wychodząca (SMTP)", 15f, true), lp(top = 16))
+            col.addView(tv("Podsumowania wysyłają się same z Twojej skrzynki. Dla Gmaila użyj „hasła do aplikacji” (Konto Google → Bezpieczeństwo).", 12f, color = dim), lp(top = 2))
+            val host = edit(MeetCfg.smtpHost, "Serwer, np. smtp.gmail.com", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+            val port = edit(MeetCfg.smtpPort.toString(), "Port", InputType.TYPE_CLASS_NUMBER)
+            val user = edit(MeetCfg.smtpUser, "Login (adres e-mail)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+            val pass = edit(MeetCfg.smtpPass, "Hasło / hasło do aplikacji", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+            var tls = MeetCfg.smtpTls
+            val presets = hbox()
+            fun preset(name: String, h: String, p: Int, t: String) = presets.addView(btn(name, size = 12f) {
+                host.setText(h); port.setText(p.toString()); tls = t; toast("Wpisano ustawienia: $name")
+            }, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
+            preset("Gmail", "smtp.gmail.com", 465, "ssl")
+            preset("Outlook", "smtp.office365.com", 587, "starttls")
+            preset("Onet", "smtp.poczta.onet.pl", 465, "ssl")
+            preset("WP", "smtp.wp.pl", 465, "ssl")
+            col.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(presets) }, lp(top = 8))
+            col.addView(host, lp(top = 6)); col.addView(port, lp(top = 6)); col.addView(user, lp(top = 6)); col.addView(pass, lp(top = 6))
+            fun store() {
+                MeetCfg.email = email.text.toString().trim()
+                MeetCfg.smtpHost = host.text.toString().trim()
+                MeetCfg.smtpPort = port.text.toString().trim().toIntOrNull() ?: 465
+                MeetCfg.smtpUser = user.text.toString().trim()
+                MeetCfg.smtpPass = pass.text.toString()
+                MeetCfg.smtpTls = if (MeetCfg.smtpPort == 587) "starttls" else tls
+            }
+            col.addView(btn("Wyślij e-mail testowy", size = 13f) {
+                store(); MeetCfg.save(this)
+                toast("Wysyłam…")
+                Thread {
+                    val err = try {
+                        Mailer.send(listOf(MeetCfg.email.ifBlank { MeetCfg.smtpUser }), "Notatnik – test poczty",
+                            "To jest wiadomość testowa z Notatnika. Podsumowania spotkań będą przychodzić w ten sposób.")
+                        null
+                    } catch (e: Exception) {
+                        e.message ?: e.javaClass.simpleName
+                    }
+                    h.post { toast(if (err == null) "Wysłano – sprawdź skrzynkę" else "Błąd: " + err.take(120)) }
+                }.start()
+            }, lp(WRAP, WRAP, top = 8))
+
+            col.addView(tv("Klucz Groq (podsumowania online)", 15f, true), lp(top = 16))
+            col.addView(tv("Zostaw puste – używany jest klucz wbudowany. Własny klucz: console.groq.com → API Keys. Gdy limit się skończy albo nie ma internetu, podsumowanie zrobi się offline.", 12f, color = dim), lp(top = 2))
+            val groq = edit(MeetCfg.groqKey, "Klucz wbudowany (wklej własny, żeby podmienić)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+            col.addView(groq, lp(top = 6))
+
+            col.addView(tv("Słownik nazw", 15f, true), lp(top = 16))
+            col.addView(tv("Nazwy firm, produktów i nazwiska, które mają być zapisane poprawnie (oddziel przecinkami).", 12f, color = dim), lp(top = 2))
+            val dict = edit(MeetCfg.dict, "np. Logi-Pack, Wedel, TimeGate, Krzysztof Bieniek",
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE).apply { minLines = 2 }
+            col.addView(dict, lp(top = 6))
+
+            var keep = MeetCfg.keepDays
+            var charging = MeetCfg.onlyCharging
+            var model = MeetCfg.model
+            val opts = vbox()
+            fun drawOpts() {
+                opts.removeAllViews()
+                seg(opts, "Rozpoznawanie mowy (Whisper, w telefonie)", listOf("Szybszy (~380 MB)" to (model == "small"), "Dokładniejszy (~1 GB)" to (model == "medium"))) {
+                    model = if (it == 0) "small" else "medium"; drawOpts()
+                }
+                opts.addView(tv(if (Models.ready(this, model)) "✓ Modele pobrane" else "Modele pobiorą się przy pierwszym przetwarzaniu (najlepiej na Wi-Fi).", 12f, color = dim), lp(top = 4))
+                seg(opts, "Usuwaj dźwięk po przetworzeniu (tekst zostaje)", listOf("Nigdy" to (keep == 0), "Po 30 dniach" to (keep == 30), "Po 90 dniach" to (keep == 90))) {
+                    keep = listOf(0, 30, 90)[it]; drawOpts()
+                }
+                seg(opts, "Przetwarzaj długie nagrania", listOf("Od razu" to !charging, "Tylko przy ładowaniu" to charging)) {
+                    charging = it == 1; drawOpts()
+                }
+            }
+            drawOpts()
+            col.addView(opts)
+            val dl = tv("", 12f, color = dim)
+            col.addView(btn("Pobierz modele teraz", size = 13f) {
+                MeetCfg.model = model; MeetCfg.save(this)
+                dl.text = "Pobieram…"
+                Thread {
+                    val err = try {
+                        Models.ensure(this, model) { p, t -> h.post { dl.text = "$t – $p%" } }; null
+                    } catch (e: Exception) { e.message }
+                    h.post { dl.text = err?.let { "Błąd: $it" } ?: "✓ Modele pobrane" }
+                }.start()
+            }, lp(WRAP, WRAP, top = 8))
+            col.addView(dl, lp(top = 4))
+
+            col.addView(tv("Zapamiętane głosy", 15f, true), lp(top = 16))
+            val voices = Voices.all(this).keys.toList()
+            if (voices.isEmpty()) col.addView(tv("Brak. Po przetworzeniu nagrania stuknij osobę w transkrypcji, wpisz imię i zaznacz „Zapamiętaj głos”.", 12f, color = dim), lp(top = 2))
+            for (v in voices) {
+                val r = hbox()
+                r.addView(tv("👤 $v", 15f), lp(0, WRAP, 1f))
+                r.addView(btn("Usuń", size = 12f) { Voices.remove(this, v); d.dismiss(); meetingSettings() })
+                col.addView(r, lp(top = 6))
+            }
+
+            col.addView(primary("Zapisz") {
+                store()
+                MeetCfg.groqKey = groq.text.toString().trim()
+                MeetCfg.dict = dict.text.toString().trim()
+                MeetCfg.keepDays = keep
+                MeetCfg.onlyCharging = charging
+                MeetCfg.model = model
+                MeetCfg.save(this)
+                d.dismiss()
+                toast("Zapisano ustawienia nagrań")
+            }, lp(top = 18))
+        }
+    }
+
+    private var showTranscript = false
+
+    /** Pod podsumowaniem: zadania (z przypomnieniami) i klikalna transkrypcja z mówcami. */
+    private fun meetingTail(col: LinearLayout, n: Note) {
+        val m = MeetMeta.of(n)
+        if (n.items.isNotEmpty()) {
+            section(col, "Zadania", 16)
+            val p = panel(col)
+            for (it in n.items.filter { !it.del }) {
+                val r = hbox()
+                r.addView(tv((if (it.done) "☑ " else "☐ ") + it.text, 15f, false, if (it.done) dim else fg).apply {
+                    setOnClickListener { _ -> it.done = !it.done; it.upd = System.currentTimeMillis(); Store.touch(n); render() }
+                }, lp(0, WRAP, 1f))
+                r.addView(btn("⏰", size = 13f) { taskReminder(n, it) })
+                p.addView(r, lp(top = 6))
+            }
+            p.addView(tv("⏰ tworzy przypomnienie z zadania.", 11f, color = dim), lp(top = 6))
+        }
+        if (m.segs.length() == 0) return
+        section(col, "Transkrypcja", 16)
+        col.addView(btn(if (showTranscript) "Ukryj transkrypcję" else "Pokaż transkrypcję (${m.segs.length()} wypowiedzi)", size = 13f) {
+            showTranscript = !showTranscript; render()
+        }, lp(WRAP, WRAP, top = 4))
+        if (!showTranscript) return
+        // mówcy – stuknij, żeby nadać imię i zapamiętać głos
+        val ks = (0 until m.segs.length()).map { m.segs.getJSONObject(it).optInt("k") }.distinct()
+        val sp = hbox()
+        for (k in ks) sp.addView(btn("👤 " + m.speaker(k), size = 12f) { speakerSheet(n, k) }, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
+        col.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(sp) }, lp(top = 8))
+        col.addView(tv("Stuknij osobę, żeby wpisać imię i zapamiętać głos. Stuknij zdanie, żeby odsłuchać od tego miejsca.", 11f, color = dim), lp(top = 4))
+        val p = panel(col)
+        for (i in 0 until m.segs.length()) {
+            val o = m.segs.getJSONObject(i)
+            val start = o.optLong("s")
+            val line = tv("", 14f).apply {
+                text = android.text.SpannableStringBuilder().apply {
+                    append(MeetingService.stamp(start) + "  ")
+                    setSpan(android.text.style.ForegroundColorSpan(accent), 0, length, 0)
+                    val st = length
+                    append(m.speaker(o.optInt("k")) + ": ")
+                    setSpan(android.text.style.StyleSpan(Typeface.BOLD), st, length, 0)
+                    append(o.optString("t"))
+                }
+                setPadding(0, dp(6), 0, dp(6))
+                setOnClickListener { playFrom(n, start + 3000) }
+            }
+            p.addView(line)
+        }
+    }
+
+    private fun taskReminder(src: Note, it: Item) {
+        val t = Note(type = "text", title = it.text.take(90), body = "Zadanie ze spotkania: " + src.title)
+        Store.notes.add(t)
+        Store.touch(t)
+        Store.save()
+        toast("Utworzono notatkę z zadaniem – ustaw termin")
+        reminderSheet(t)
+    }
+
+    /** Nadanie imienia mówcy (w całej notatce) i zapamiętanie jego głosu na przyszłość. */
+    private fun speakerSheet(n: Note, k: Int) {
+        val m = MeetMeta.of(n)
+        val old = m.speaker(k)
+        val count = (0 until m.segs.length()).count { m.segs.getJSONObject(it).optInt("k") == k }
+        sheet("Kto to jest?") { col, d ->
+            col.addView(tv("$old · wypowiedzi: $count", 13f, color = dim), lp(top = 2))
+            val e = edit(if (old.startsWith("Osoba ")) "" else old, "Imię i nazwisko")
+            col.addView(e, lp(top = 8))
+            val known = Voices.all(this).keys
+            if (known.isNotEmpty()) {
+                val r = hbox()
+                known.forEach { name -> r.addView(btn(name, size = 12f) { e.setText(name) }, lp(WRAP, WRAP).apply { rightMargin = dp(6) }) }
+                col.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(r) }, lp(top = 8))
+            }
+            var remember = true
+            val box = vbox()
+            fun draw() {
+                box.removeAllViews()
+                seg(box, "Zapamiętaj głos (następnym razem rozpozna tę osobę sam)", listOf("Tak" to remember, "Nie" to !remember)) { remember = it == 0; draw() }
+            }
+            draw()
+            col.addView(box)
+            col.addView(primary("Zapisz") {
+                val name = e.text.toString().trim()
+                if (name.isEmpty()) { toast("Wpisz imię"); return@primary }
+                m.speakers.put(k.toString(), name)
+                val rx = Regex("\\b" + Regex.escape(old) + "\\b")
+                n.body = n.body.replace(rx, name)
+                n.items.forEach { it.text = it.text.replace(rx, name) }
+                if (remember) m.cents.optJSONArray(k.toString())?.let { a ->
+                    Voices.remember(this, name, FloatArray(a.length()) { a.optDouble(it).toFloat() })
+                }
+                n.meta = m.toJson()
+                Store.touch(n); Store.save()
+                d.dismiss(); render()
+                toast(if (remember) "Zapisano – głos $name zapamiętany" else "Zapisano")
+            }, lp(top = 14))
+        }
+    }
+
+    private fun emailSummary(n: Note) {
+        val m = MeetMeta.of(n)
+        val to = if (m.recipients.isNotEmpty()) m.recipients else listOf(MeetCfg.email).filter { it.isNotBlank() }
+        if (to.isEmpty()) { toast("Brak adresata – ustaw domyślny e-mail w ustawieniach Nagrań"); return }
+        if (!MeetCfg.mailReady) { toast("Skonfiguruj pocztę: Nagrania → Ustawienia"); return }
+        toast("Wysyłam do: " + to.joinToString(", "))
+        Thread {
+            val err = try {
+                Mailer.send(to, (if (m.lang == "en") "Meeting summary: " else "Podsumowanie: ") + n.title, n.body)
+                null
+            } catch (e: Exception) {
+                e.message ?: "błąd"
+            }
+            h.post {
+                if (err == null) { m.emailed = true; n.meta = m.toJson(); Store.touch(n); Store.save(); toast("Wysłano"); render() }
+                else toast("Błąd wysyłki: " + err.take(120))
+            }
+        }.start()
     }
 }

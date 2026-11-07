@@ -64,7 +64,8 @@ class Note(
     var servings: Int = 0,
     var cookTime: String = "",
     var source: String = "",
-    var tips: String = ""
+    var tips: String = "",
+    var meta: String = ""
 ) {
     val isList get() = type == "list"
     val isRecipe get() = type == "recipe"
@@ -81,7 +82,7 @@ class Note(
         .put("repeat", repeat).put("repDays", repDays).put("repEvery", repEvery).put("repUnit", repUnit)
         .put("photos", JSONArray(photos)).put("photoText", photoText).put("deleted", deleted).put("shared", shared)
         .put("sharedSha", sharedSha).put("syncedAt", syncedAt).put("template", template).put("locked", locked)
-        .put("servings", servings).put("cookTime", cookTime).put("source", source).put("tips", tips)
+        .put("servings", servings).put("cookTime", cookTime).put("source", source).put("tips", tips).put("meta", meta)
 
     /** Tekst do wyszukiwania. */
     fun searchText(): String = if (locked) title else
@@ -101,7 +102,8 @@ class Note(
                 repUnit = o.optString("repUnit", "d"), photoText = o.optString("photoText"), deleted = o.optLong("deleted"),
                 shared = o.optBoolean("shared"), sharedSha = o.optString("sharedSha"), syncedAt = o.optLong("syncedAt"),
                 template = o.optBoolean("template"), locked = o.optBoolean("locked"), servings = o.optInt("servings"),
-                cookTime = o.optString("cookTime"), source = o.optString("source"), tips = o.optString("tips")
+                cookTime = o.optString("cookTime"), source = o.optString("source"), tips = o.optString("tips"),
+                meta = o.optString("meta")
             )
             o.optJSONArray("photos")?.let { a -> for (k in 0 until a.length()) n.photos.add(a.getString(k)) }
             if (n.image.isNotEmpty() && n.type != "scan" && n.photos.isEmpty()) {
@@ -191,10 +193,11 @@ object Store {
     fun norm(s: String): String =
         Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").replace("ł", "l")
 
-    /** Obszar wpisu: notes, recipes albo scans. */
+    /** Obszar wpisu: notes, recipes, scans albo recordings. */
     fun area(n: Note) = when {
         n.isRecipe -> "recipes"
         n.isScanArea -> "scans"
+        n.type == "meeting" || n.type == "audio" -> "recordings"
         else -> "notes"
     }
 

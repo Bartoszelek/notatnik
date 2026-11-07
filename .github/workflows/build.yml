@@ -19,6 +19,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
+      - name: Pobierz sherpa-onnx (rozpoznawanie mowy)
+        run: |
+          mkdir -p app/libs
+          curl -L --fail --retry 3 -o app/libs/sherpa-onnx.aar https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.40/sherpa-onnx-1.12.40.aar
+          ls -la app/libs
+          unzip -l app/libs/sherpa-onnx.aar | grep -E "classes.jar|\.so$" | head -20 || true
       - name: Build debug APK
         run: gradle assembleDebug
       - name: Prepare APK
