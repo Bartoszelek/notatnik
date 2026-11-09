@@ -135,6 +135,8 @@ class MainActivity : Activity() {
         root.fitsSystemWindows = true
         setContentView(root)
         pendingIntent = intent
+        area = if (Store.startArea == "last") Store.lastArea else Store.startArea
+        if (area !in listOf("notes", "recordings", "recipes", "scans")) area = "notes"
         intent?.getStringExtra("area")?.let { area = it }
         render()
         consumeIntent()
@@ -484,6 +486,7 @@ class MainActivity : Activity() {
 
     private fun switchArea(a: String) {
         area = a
+        if (Store.lastArea != a) { Store.lastArea = a; Store.save() }
         filter = "all"
         query = ""
         render()
@@ -491,16 +494,31 @@ class MainActivity : Activity() {
 
     private fun areaTabs(onHero: Boolean): View {
         val r = hbox()
-        listOf("notes" to "Notatki", "recordings" to "Nagrania", "recipes" to "Przepisy", "scans" to "Skany").forEach { (k, label) ->
+        listOf(
+            Triple("notes", R.drawable.ic_note, "Notatki"),
+            Triple("recordings", R.drawable.ic_mic, "Nagrania"),
+            Triple("recipes", R.drawable.ic_recipe, "Przepisy"),
+            Triple("scans", R.drawable.ic_scan, "Skany")
+        ).forEach { (k, res, label) ->
             val sel = k == area
-            val t = if (onHero) tv(label, 13f, true, if (sel) Theme.accent else Color.WHITE).apply {
-                background = round(if (sel) Color.WHITE else Theme.withAlpha(Color.WHITE, 0.2f), 16)
-                setPadding(dp(12), dp(7), dp(12), dp(7))
-                setOnClickListener { switchArea(k) }
-            } else btn(label, sel, 14f) { switchArea(k) }
-            r.addView(t, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
+            val f = FrameLayout(this)
+            val tint = when {
+                onHero -> if (sel) Theme.accent else Color.WHITE
+                Store.eink -> if (sel) bg else fg
+                else -> if (sel) Theme.onAccent else fg
+            }
+            f.background = when {
+                onHero -> round(if (sel) Color.WHITE else Theme.withAlpha(Color.WHITE, 0.2f), 20)
+                Store.eink -> if (sel) round(fg, 20) else round(bg, 20, 2, fg)
+                else -> if (sel) round(Theme.accent, 20) else round(surface, 20, 1)
+            }
+            f.addView(icon(res, 22, tint), FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+            f.contentDescription = label
+            f.setOnClickListener { switchArea(k) }
+            f.setOnLongClickListener { toast(label); true }
+            r.addView(f, LinearLayout.LayoutParams(dp(52), dp(40)).apply { rightMargin = dp(8) })
         }
-        return HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(r) }
+        return r
     }
 
     private fun renderLib() {
@@ -2282,6 +2300,8 @@ class MainActivity : Activity() {
             seg(p, "Tryb", Theme.MODES.map { (id, label) -> label to (Store.mode == id) }) { Store.mode = Theme.MODES[it].first; Store.save(); render() }
         }
         seg(p, "Układ", listOf("Siatka" to (Store.layout == "grid"), "Lista" to (Store.layout == "list"))) { Store.layout = if (it == 0) "grid" else "list"; Store.save(); render() }
+        val starts = listOf("last" to "Ostatnio używane", "notes" to "Notatki", "recordings" to "Nagrania", "recipes" to "Przepisy", "scans" to "Skany")
+        seg(p, "Na starcie otwieraj", starts.map { (k, l) -> l to (Store.startArea == k) }) { Store.startArea = starts[it].first; Store.save(); render() }
 
         section(col, "Widżety")
         p = panel(col)

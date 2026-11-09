@@ -148,6 +148,8 @@ object Store {
     val widgets = HashMap<Int, WidgetCfg>()
 
     var eink = false
+    var startArea = "last"   // last, notes, recordings, recipes, scans
+    var lastArea = "notes"
     var invert = false
     var theme = "indigo"
     var mode = "system"
@@ -232,6 +234,7 @@ object Store {
     @Synchronized
     fun save() {
         val o = JSONObject()
+        o.put("startArea", startArea).put("lastArea", lastArea)
         o.put("eink", eink).put("invert", invert).put("theme", theme).put("mode", mode).put("layout", layout)
             .put("ghToken", ghToken).put("ghRepo", ghRepo).put("ghAuto", ghAuto).put("ghLast", ghLast)
             .put("driveUri", driveUri).put("driveAuto", driveAuto).put("driveLast", driveLast).put("changed", changed)
@@ -258,6 +261,8 @@ object Store {
             if (!f.exists()) return
             val o = JSONObject(f.readText())
             eink = o.optBoolean("eink")
+            startArea = o.optString("startArea", "last")
+            lastArea = o.optString("lastArea", "notes")
             invert = o.optBoolean("invert")
             theme = o.optString("theme", "indigo")
             mode = o.optString("mode", "system")
