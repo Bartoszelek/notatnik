@@ -146,6 +146,23 @@
             android:foregroundServiceType="microphone" />
 
         <service
+            android:name=".EinkWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+        <receiver
+            android:name=".EinkWidget"
+            android:exported="true"
+            android:label="Notatki e-ink (cała strona)">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_eink_info" />
+        </receiver>
+
+        <service
             android:name=".NotesWidgetService"
             android:exported="false"
             android:permission="android.permission.BIND_REMOTEVIEWS" />

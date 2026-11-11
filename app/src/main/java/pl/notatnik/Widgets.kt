@@ -27,6 +27,7 @@ import android.widget.TextView
 /** Kolory widżetu: tło, tekst, przygaszony tekst. */
 private fun widgetColors(ctx: Context, c: WidgetCfg): Triple<Int, Int, Int> = when (c.bg) {
     "light" -> Triple(Color.WHITE, 0xFF111827.toInt(), 0xFF6B7280.toInt())
+    "paper" -> Triple(0xFFF4F1EA.toInt(), Color.BLACK, 0x99000000.toInt())
     "theme" -> {
         Theme.apply(ctx, Store.theme, Store.mode)
         Triple(Theme.blend(Theme.accent, Color.BLACK, 0.25f), Color.WHITE, 0xCCFFFFFF.toInt())
@@ -67,6 +68,7 @@ class NotesWidget : AppWidgetProvider() {
                 for (id in ids) update(ctx, mgr, id)
                 if (ids.isNotEmpty()) mgr.notifyAppWidgetViewDataChanged(ids, R.id.wlist)
                 QuickWidget.updateAll(ctx)
+                EinkWidget.updateAll(ctx)
             } catch (e: Exception) {
             }
         }
@@ -431,8 +433,8 @@ class WidgetConfigActivity : Activity() {
                 override fun onStopTrackingTouch(s: SeekBar?) = render()
             })
         }, lp(6))
-        row("Tło", listOf("Ciemne" to (cfg.bg == "dark"), "Jasne" to (cfg.bg == "light"), "Kolor motywu" to (cfg.bg == "theme"))) {
-            cfg.bg = listOf("dark", "light", "theme")[it]
+        row("Tło", listOf("Ciemne" to (cfg.bg == "dark"), "Jasne" to (cfg.bg == "light"), "Kolor motywu" to (cfg.bg == "theme"), "Papier (e-ink)" to (cfg.bg == "paper"))) {
+            cfg.bg = listOf("dark", "light", "theme", "paper")[it]
         }
         row("Wielkość tekstu", listOf("Mały" to (cfg.text == 13), "Średni" to (cfg.text == 15), "Duży" to (cfg.text == 18))) {
             cfg.text = listOf(13, 15, 18)[it]
@@ -448,8 +450,14 @@ class WidgetConfigActivity : Activity() {
                 Store.widgets[wid] = cfg
                 Store.save()
                 val mgr = AppWidgetManager.getInstance(this@WidgetConfigActivity)
-                NotesWidget.update(this@WidgetConfigActivity, mgr, wid)
-                mgr.notifyAppWidgetViewDataChanged(wid, R.id.wlist)
+                // ten sam ekran ustawień obsługuje zwykły widżet i widżet e-ink na cały ekran
+                if (mgr.getAppWidgetInfo(wid)?.provider?.className == EinkWidget::class.java.name) {
+                    EinkWidget.update(this@WidgetConfigActivity, mgr, wid)
+                    mgr.notifyAppWidgetViewDataChanged(wid, R.id.ek_list)
+                } else {
+                    NotesWidget.update(this@WidgetConfigActivity, mgr, wid)
+                    mgr.notifyAppWidgetViewDataChanged(wid, R.id.wlist)
+                }
                 setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, wid))
                 finish()
             }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="pl.notatnik.WidgetConfigActivity"
+    android:initialLayout="@layout/widget_eink"
+    android:previewLayout="@layout/widget_eink"
+    android:description="@string/widget_eink_desc"
+    android:minWidth="250dp" android:minHeight="320dp"
+    android:minResizeWidth="180dp" android:minResizeHeight="180dp"
+    android:targetCellWidth="4" android:targetCellHeight="5"
+    android:maxResizeWidth="1000dp" android:maxResizeHeight="2000dp"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable|configuration_optional" />

@@ -52,4 +52,5 @@
         <item name="android:textColor">#FFFFFFFF</item>
         <item name="android:textSize">12sp</item>
     </style>
+    <string name="widget_eink_desc">Notatki e-ink na cały ekran: kategorie u góry, lista do odhaczania lub tekst</string>
 </resources>
